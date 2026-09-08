@@ -1,85 +1,205 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-  <base target="_top">
-  <script src="https://unpkg.com/html5-qrcode"></script>
-  <style>
-    body { font-family: sans-serif; text-align: center; margin: 0; padding: 10px; background: #f4f4f4; }
-    #reader { width: 100%; max-width: 400px; margin: 0 auto; background: #000; }
-    .controls { margin-top: 15px; }
-    select, button { padding: 10px; font-size: 16px; margin: 5px; }
-    #result { margin-top: 20px; font-weight: bold; color: #333; }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>店舗間移動スキャナー</title>
+    <!-- デザイン用ライブラリ -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- バーコード読み取り用ライブラリ -->
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <style>
+        /* スクロールバーの非表示（見た目をスッキリさせるため） */
+        ::-webkit-scrollbar { display: none; }
+        body { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
 </head>
-<body>
-  <h2>スキャナー</h2>
-  
-  <div class="controls">
-    <select id="scanType">
-      <option value="出荷">出荷</option>
-      <option value="受入">受入</option>
-    </select>
-    <input type="text" id="storeName" placeholder="店舗名を入力" required>
-  </div>
+<body class="bg-gray-100 text-gray-800">
 
-  <div id="reader"></div>
-  <div id="result">読取待機中...</div>
+    <!-- 追従するヘッダー -->
+    <div class="sticky top-0 z-50 bg-blue-600 text-white p-3 shadow-md flex justify-between items-center">
+        <h1 class="text-lg font-bold">店舗間移動スキャナー</h1>
+        <button onclick="exportData()" class="bg-white text-blue-600 px-3 py-1 rounded text-sm font-bold shadow">
+            データ出力
+        </button>
+    </div>
 
-  <script>
-    let lastScanTime = 0;
-    
-    // 要件2: ビープ音の生成
-    function playBeep() {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = "sine";
-      osc.frequency.value = 1200;
-      osc.start();
-      setTimeout(() => osc.stop(), 100);
-    }
+    <div class="p-4 max-w-md mx-auto">
+        <!-- 設定エリア -->
+        <div class="bg-white p-3 rounded shadow mb-4 flex gap-2">
+            <select id="modeSelect" class="border p-2 rounded w-1/3 text-center font-bold">
+                <option value="出荷">出荷</option>
+                <option value="受入">受入</option>
+            </select>
+            <input type="text" id="storeInput" placeholder="店舗名を入力" class="border p-2 rounded w-2/3">
+        </div>
 
-    function onScanSuccess(decodedText, decodedResult) {
-      // 要件1: 14桁の数字のみ受け付ける
-      if (!/^\d{14}$/.test(decodedText)) return;
+        <!-- カメラエリア (画面高さの25%) -->
+        <div class="relative w-full h-[25vh] bg-black rounded overflow-hidden shadow-inner mb-4">
+            <div id="reader" class="w-full h-full object-cover"></div>
+            <!-- スキャンガイド枠 -->
+            <div class="absolute inset-0 pointer-events-none flex items-center justify-center">
+                <div class="w-3/4 h-1/3 border-4 border-red-500 rounded-lg opacity-70"></div>
+            </div>
+            <!-- メッセージ表示 -->
+            <div id="scanMessage" class="absolute bottom-2 left-0 right-0 text-center text-white text-sm font-bold drop-shadow-md">
+                カメラを起動中...
+            </div>
+        </div>
 
-      const now = Date.now();
-      // 要件8: スキャン毎に1秒あける
-      if (now - lastScanTime < 1000) return;
-      lastScanTime = now;
+        <!-- 追従するリストのタイトル -->
+        <div class="sticky top-[60px] z-40 bg-gray-200 p-2 rounded-t shadow-sm font-bold text-center border-b">
+            スキャン履歴
+        </div>
+        
+        <!-- リスト表示エリア -->
+        <div class="bg-white rounded-b shadow mb-10">
+            <ul id="scanList" class="divide-y divide-gray-200">
+                <!-- スキャンデータがここに追加されます -->
+            </ul>
+        </div>
+    </div>
 
-      const storeName = document.getElementById('storeName').value;
-      const scanType = document.getElementById('scanType').value;
+    <script>
+        // ピッという音を鳴らす仕組み (Web Audio API)
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playBeep(isError = false) {
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            
+            if (isError) {
+                oscillator.type = 'sawtooth';
+                oscillator.frequency.value = 200; // 低い音
+                gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
+                oscillator.start();
+                oscillator.stop(audioCtx.currentTime + 0.3);
+            } else {
+                oscillator.type = 'sine';
+                oscillator.frequency.value = 1000; // 高い音（ピッ）
+                gainNode.gain.setValueAtTime(1, audioCtx.currentTime);
+                oscillator.start();
+                oscillator.stop(audioCtx.currentTime + 0.1);
+            }
+        }
 
-      if (!storeName) {
-        alert("店舗名を入力してください");
-        return;
-      }
+        // スキャンデータの保存用配列
+        let scanDataList = [];
+        let isScanning = true; // 1秒間隔の制御用
 
-      playBeep(); // ピッと鳴らす
-      document.getElementById('result').innerText = `スキャン済: ${decodedText} 送信中...`;
+        function updateListUI() {
+            const listEl = document.getElementById('scanList');
+            listEl.innerHTML = '';
+            
+            // 最新のものが上に来るように逆順で表示
+            [...scanDataList].reverse().forEach(data => {
+                const li = document.createElement('li');
+                li.className = 'p-3 flex justify-between items-center text-sm';
+                li.innerHTML = `
+                    <div>
+                        <span class="text-xs text-gray-500">${data.time}</span><br>
+                        <span class="font-bold text-${data.mode === '出荷' ? 'blue' : 'green'}-600">[${data.mode}]</span>
+                        <span class="font-semibold">${data.barcode}</span>
+                    </div>
+                    <div class="text-lg font-bold">x ${data.count}</div>
+                `;
+                listEl.appendChild(li);
+            });
+        }
 
-      // スプレッドシートへデータ送信
-      google.script.run
-        .withSuccessHandler((res) => {
-          document.getElementById('result').innerText = `${decodedText} : ${res.message}`;
-        })
-        .processScan(storeName, scanType, decodedText);
-    }
+        function onScanSuccess(decodedText) {
+            if (!isScanning) return;
 
-    // 要件9,10,11,13: 高速・高精度・常時ON・バーコードサイズの枠
-    const html5QrcodeScanner = new Html5QrcodeScanner(
-      "reader",
-      { 
-        fps: 20, // 高速スキャン
-        qrbox: { width: 300, height: 100 }, // バーコードサイズに合わせた横長枠
-        aspectRatio: 1.0
-      },
-      false
-    );
-    html5QrcodeScanner.render(onScanSuccess);
-  </script>
+            // 数字以外の文字を除去
+            const cleanCode = decodedText.replace(/\D/g, '');
+
+            const msgEl = document.getElementById('scanMessage');
+
+            // ★ 13桁制限のチェック
+            if (cleanCode.length !== 13) {
+                playBeep(true); // エラー音
+                msgEl.textContent = `無効な形式: ${cleanCode.length}桁`;
+                msgEl.className = "absolute bottom-2 left-0 right-0 text-center text-red-400 text-sm font-bold drop-shadow-md bg-black/50 p-1";
+                
+                isScanning = false;
+                setTimeout(() => { isScanning = true; msgEl.textContent = "スキャン待機中..."; }, 1500);
+                return;
+            }
+
+            // 成功処理
+            playBeep(false); // 成功音
+            msgEl.textContent = "読み取り成功！";
+            msgEl.className = "absolute bottom-2 left-0 right-0 text-center text-green-400 text-sm font-bold drop-shadow-md bg-black/50 p-1";
+
+            const mode = document.getElementById('modeSelect').value;
+            const store = document.getElementById('storeInput').value || '未入力';
+            const now = new Date();
+            const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+
+            // 既に同じバーコード＆同じモードのデータがあるかチェックして加算
+            const existingItem = scanDataList.find(item => item.barcode === cleanCode && item.mode === mode);
+            if (existingItem) {
+                existingItem.count += 1;
+                existingItem.time = timeStr; // 時間を更新
+            } else {
+                scanDataList.push({
+                    time: timeStr,
+                    mode: mode,
+                    store: store,
+                    barcode: cleanCode,
+                    count: 1
+                });
+            }
+
+            updateListUI();
+
+            // 1秒間スキャンを停止（連続読み込み防止）
+            isScanning = false;
+            setTimeout(() => {
+                isScanning = true;
+                msgEl.textContent = "スキャン待機中...";
+                msgEl.className = "absolute bottom-2 left-0 right-0 text-center text-white text-sm font-bold drop-shadow-md";
+            }, 1000);
+        }
+
+        function exportData() {
+            if (scanDataList.length === 0) {
+                alert("出力するデータがありません。");
+                return;
+            }
+            // スプレッドシートに貼り付けやすいようにタブ区切りテキスト(TSV)を作成
+            let tsv = "日時\t区分\t店舗名\tバーコード\t数量\n";
+            scanDataList.forEach(d => {
+                tsv += `${d.time}\t${d.mode}\t${d.store}\t${d.barcode}\t${d.count}\n`;
+            });
+
+            // クリップボードにコピー
+            navigator.clipboard.writeText(tsv).then(() => {
+                alert("データをコピーしました！\nスプレッドシートに貼り付けてください。");
+            }).catch(err => {
+                alert("コピーに失敗しました。");
+                console.error(err);
+            });
+        }
+
+        // カメラの起動設定
+        const html5QrcodeScanner = new Html5Qrcode("reader");
+        const config = { 
+            fps: 15, 
+            qrbox: { width: 250, height: 100 },
+            formatsToSupport: [ Html5QrcodeSupportedFormats.EAN_13 ] // 一般的な13桁バーコードを指定
+        };
+
+        // 背面カメラを起動
+        html5QrcodeScanner.start(
+            { facingMode: "environment" },
+            config,
+            onScanSuccess
+        ).catch(err => {
+            document.getElementById('scanMessage').textContent = "カメラの起動に失敗しました";
+            console.error("Camera Error:", err);
+        });
+    </script>
 </body>
 </html>
