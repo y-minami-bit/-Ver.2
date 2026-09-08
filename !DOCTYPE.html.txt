@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin: 0; padding: 10px; background: #f4f4f4; }
+    #reader { width: 100%; max-width: 400px; margin: 0 auto; background: #000; }
+    .controls { margin-top: 15px; }
+    select, button { padding: 10px; font-size: 16px; margin: 5px; }
+    #result { margin-top: 20px; font-weight: bold; color: #333; }
+  </style>
+</head>
+<body>
+  <h2>スキャナー</h2>
+  
+  <div class="controls">
+    <select id="scanType">
+      <option value="出荷">出荷</option>
+      <option value="受入">受入</option>
+    </select>
+    <input type="text" id="storeName" placeholder="店舗名を入力" required>
+  </div>
+
+  <div id="reader"></div>
+  <div id="result">読取待機中...</div>
+
+  <script>
+    let lastScanTime = 0;
+    
+    // 要件2: ビープ音の生成
+    function playBeep() {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.value = 1200;
+      osc.start();
+      setTimeout(() => osc.stop(), 100);
+    }
+
+    function onScanSuccess(decodedText, decodedResult) {
+      // 要件1: 14桁の数字のみ受け付ける
+      if (!/^\d{14}$/.test(decodedText)) return;
+
+      const now = Date.now();
+      // 要件8: スキャン毎に1秒あける
+      if (now - lastScanTime < 1000) return;
+      lastScanTime = now;
+
+      const storeName = document.getElementById('storeName').value;
+      const scanType = document.getElementById('scanType').value;
+
+      if (!storeName) {
+        alert("店舗名を入力してください");
+        return;
+      }
+
+      playBeep(); // ピッと鳴らす
+      document.getElementById('result').innerText = `スキャン済: ${decodedText} 送信中...`;
+
+      // スプレッドシートへデータ送信
+      google.script.run
+        .withSuccessHandler((res) => {
+          document.getElementById('result').innerText = `${decodedText} : ${res.message}`;
+        })
+        .processScan(storeName, scanType, decodedText);
+    }
+
+    // 要件9,10,11,13: 高速・高精度・常時ON・バーコードサイズの枠
+    const html5QrcodeScanner = new Html5QrcodeScanner(
+      "reader",
+      { 
+        fps: 20, // 高速スキャン
+        qrbox: { width: 300, height: 100 }, // バーコードサイズに合わせた横長枠
+        aspectRatio: 1.0
+      },
+      false
+    );
+    html5QrcodeScanner.render(onScanSuccess);
+  </script>
+</body>
+</html>
